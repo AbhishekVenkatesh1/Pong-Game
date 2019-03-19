@@ -1,228 +1,219 @@
 package physicsdemo;
 
-import java.io.BufferedReader;
-import java.io.IOException;
-import java.io.InputStreamReader;
-import java.io.PrintWriter;
-import java.net.ServerSocket;
-import java.net.Socket;
+import static constants.GameConstants.DOWN;
+import static constants.GameConstants.LEFT;
+import static constants.GameConstants.RIGHT;
+import static constants.GameConstants.UP;
 import java.net.URL;
 import java.util.ArrayList;
-import java.util.Date;
+import java.util.Optional;
 import java.util.ResourceBundle;
 import javafx.application.Platform;
+import javafx.event.ActionEvent;
 import javafx.fxml.FXML;
 import javafx.fxml.Initializable;
-import javafx.scene.control.TextArea;
-import simulation.Box;
-import simulation.Simulation;
+import javafx.scene.Scene;
+import javafx.scene.control.Label;
+import javafx.scene.control.TextInputDialog;
+import javafx.scene.shape.Shape;
+import javafx.stage.Stage;
 
-public class FXMLDocumentController implements Initializable,constants.GameConstants {
-
+public class FXMLDocumentController implements Initializable, constants.GameConstants {
+    private GameGateway gateway;
+    
+    private int player;
+    
+    private String handle;
+    
     @FXML
-    private TextArea textArea;
+    private Label title;
     
-    private int playerNumber1 = 1;
+    @FXML
+    private Label player1handle;
     
-    private int playerNumber2 = 2;
+    @FXML
+    private Label player2handle;
     
-    private int sessionNumber = 1;
+    @FXML
+    private Label player1ready;
     
-    private Simulation sim;
+    @FXML
+    private Label player2ready;
     
-    private Box paddle1;
+    @FXML
+    private Label waiting;
     
-    private Box paddle2;
+    @FXML
+    private Label bothReady;
     
-    public void setSimulation(Simulation sim) {
-        this.sim = sim;
-        paddle1 = sim.getBox1();
-        paddle2 = sim.getBox2();
+    @FXML
+    private void clickReady(ActionEvent event) {
+        if (player == PLAYER1) {
+            gateway.sendReady1(true);
+            player1ready.setText(handle + " is ready to play!");
+        } else if (player == PLAYER2) {
+            gateway.sendReady2(true);
+            player2ready.setText(handle + " is ready to play!");
+        }
     }
     
     @Override
     public void initialize(URL url, ResourceBundle rb) {
-        new Thread( () -> {
-            try {
-                ServerSocket serverSocket = new ServerSocket(8000);
+        gateway = new GameGateway();
         
-                while (true) {
-                    Platform.runLater( () -> {
-                        textArea.appendText(new Date() + ": Waiting for two players to join session "
-                            + sessionNumber + "\n");
-                    });
+        TextInputDialog dialog = new TextInputDialog();
+        dialog.setTitle("Start Game");
+        dialog.setHeaderText(null);
+        dialog.setContentText("Enter a handle:");
+        Optional<String> result = dialog.showAndWait();
+        result.ifPresent(name -> {
+            gateway.sendHandle(name);
+            handle = name;
+        });
+        title.setText("Physics Pong");
 
-                    Socket player1 = serverSocket.accept();
-
-                    Platform.runLater( () -> {
-                        textArea.appendText(new Date() + ": Player " + playerNumber1
-                            + " has joined session " + sessionNumber + "\n");
-                    });
-                    
-                    Platform.runLater( () -> {
-                        textArea.appendText(new Date() + ": Waiting for player " 
-                            + playerNumber2 + " to join" + "\n");
-                    });
-
-                    PrintWriter outputToPlayer1 = new PrintWriter(player1.getOutputStream());
-                    outputToPlayer1.println(PLAYER1);
-                    outputToPlayer1.flush();
-                    
-                    BufferedReader inputFromPlayer1 = new BufferedReader(new InputStreamReader(player1.getInputStream()));
-                    String p1handle = inputFromPlayer1.readLine();
-
-                    Socket player2 = serverSocket.accept();
-
-                    Platform.runLater( () -> {
-                        textArea.appendText(new Date() + ": Player " + playerNumber2
-                            + " has joined session " + sessionNumber + "\n");
-                    });
-
-                    PrintWriter outputToPlayer2 = new PrintWriter(player2.getOutputStream());
-                    outputToPlayer2.println(PLAYER2);
-                    outputToPlayer2.flush();
-                    
-                    BufferedReader inputFromPlayer2 = new BufferedReader(new InputStreamReader(player2.getInputStream()));
-                    String p2handle = inputFromPlayer2.readLine();
-                    
-                    outputToPlayer1.println(p2handle);
-                    outputToPlayer1.flush();
-                    outputToPlayer2.println(p1handle);
-                    outputToPlayer2.flush();
-                    
-                    Platform.runLater( () -> {
-                        textArea.appendText(new Date() + ": Starting session " + sessionNumber + "\n");
-                        sessionNumber++;
-                    });
-
-                    new Thread(new HandleASession(player1,textArea,sim,paddle1)).start();
-                    new Thread(new HandleASession(player2,textArea,sim,paddle2)).start();
-                    // This is the main animation thread
-                    new Thread(() -> {
-                        while (true) {
-                            sim.evolve(1.0);
-                            Platform.runLater(()->sim.updateShapes());
-                            try {
-                                Thread.sleep(50);
-                            } catch (InterruptedException ex) {
-                                ex.printStackTrace();
-                            }
-                        }
-                    }).start();
+        new Thread(() -> {
+            player = gateway.getPlayer();
+            
+            Platform.runLater(()-> {
+                if (player == PLAYER1) {
+                    player1handle.setText("Player 1: " + handle);
+                } else if (player == PLAYER2) {
+                    player2handle.setText("Player 2: " + handle);
                 }
-            }
-            catch(IOException ex) {
-                ex.printStackTrace();
-            }
+            });
+            
+            String otherPlayer = gateway.getOtherHandle();
+            
+            Platform.runLater(()-> {
+                if (player == PLAYER1) {
+                    player2handle.setText("Player 2: " + otherPlayer);
+                } else if (player == PLAYER2) {
+                    player1handle.setText("Player 1: " + otherPlayer);
+                }
+            });
+            new Thread(new ReadyCheck(gateway,player,player1ready,player2ready,waiting,bothReady)).start();
         }).start();
-    }     
+    }    
 }
 
-class HandleASession implements Runnable,constants.GameConstants {
-    private Socket player;
-    private TextArea textArea;
-    private Simulation simulation;
-    private Box paddle;
-    private String handle;
-    private static boolean player1ready;
-    private static boolean player2ready;
+class ReadyCheck implements Runnable, constants.GameConstants {
+    private GameGateway gateway;
+    private int player;
+    private Label player1ready;
+    private Label player2ready;
+    private Label waiting;
+    private Label bothReady;
+    private boolean ready1 = false;
+    private boolean ready2 = false;
     
-    public HandleASession(Socket player, TextArea textArea, Simulation simulation, Box paddle) {
+    public ReadyCheck(GameGateway gateway, int player, Label player1ready, Label player2ready, Label waiting, Label bothReady) {
+        this.gateway = gateway;
         this.player = player;
-        this.textArea = textArea;
-        this.simulation = simulation;
-        this.paddle = paddle;
+        this.player1ready = player1ready;
+        this.player2ready = player2ready;
+        this.waiting = waiting;
+        this.bothReady = bothReady;
     }
     
     public void run() {
-        try {
-            BufferedReader inputFromPlayer = new BufferedReader(new InputStreamReader(player.getInputStream()));
-            PrintWriter outputToPlayer = new PrintWriter(player.getOutputStream());
-            
-            while(true) {
-                int request = Integer.parseInt(inputFromPlayer.readLine());
-                
-                switch(request) {
-                    case SEND_HANDLE: {
-                        handle = inputFromPlayer.readLine();
-                        break;
-                    }
-                    case GET_HANDLE: {
-                        outputToPlayer.println(handle);
-                        outputToPlayer.flush();
-                        break;
-                    }
-                    case SEND_READY1: {
-                        player1ready = Boolean.parseBoolean(inputFromPlayer.readLine());
-                        break;
-                    }
-                    case GET_READY1: {
-                        outputToPlayer.println(player1ready);
-                        outputToPlayer.flush();
-                        break;
-                    }
-                    case SEND_READY2: {
-                        player2ready = Boolean.parseBoolean(inputFromPlayer.readLine());
-                        break;
-                    }
-                    case GET_READY2: {
-                        outputToPlayer.println(player2ready);
-                        outputToPlayer.flush();
-                        break;
-                    }
-                    case SEND_MOVE: {
-                        int code = Integer.parseInt(inputFromPlayer.readLine());
-                        System.out.println("Moving: " + code);
-                        switch(code) {
-                            case DOWN: {
-                                simulation.moveInner(paddle,0, 3);
-                                break;
-                            }
-                            case UP: {
-                                simulation.moveInner(paddle,0, -3);
-                                break;
-                            }
-                            case LEFT: {
-                                simulation.moveInner(paddle,-3, 0);
-                                break;
-                            }
-                            case RIGHT: {
-                                simulation.moveInner(paddle,3, 0);
-                                break;
-                            }
-                        }
-                        break;
-                    }
-                    case GET_SHAPES: {
-                        simulation.updateShapes();
-                        ArrayList<String> shapeStrings = simulation.setUpShapesStrings();
-                        outputToPlayer.println(shapeStrings.size());
-                        for(String s: shapeStrings) {
-                            outputToPlayer.println(s);
-                        }
-                        outputToPlayer.flush();
-                        break;
-                    }
-                    case P1_Score: {
-                        outputToPlayer.println(simulation.p1Score);
-                        outputToPlayer.flush();
-                        break;
-                    }
-                    case P2_Score: {
-                        outputToPlayer.println(simulation.p2Score);
-                        outputToPlayer.flush();
-                        break;
-                    }
-                    case SEND_RESTART: {
-                        System.out.println("Resetting...");
-                        simulation.reset();
-                        System.out.println("Reset done");
-                        break;
-                    }
+        while(!ready1 || !ready2) {
+            if (player == PLAYER1) {
+                ready1 = gateway.getReady1();
+                ready2 = gateway.getReady2();
+                if (ready2 == true) {
+                    Platform.runLater( () -> {
+                    player2ready.setText("Player 2 is ready to play!");
+                    });
+                }
+                if (ready1 == false && ready2 == true) {
+                    Platform.runLater( () -> {
+                    waiting.setText("Waiting for player 1 to ready up...");
+                    });
+                } else if (ready1 == true && ready2 == false) {
+                    Platform.runLater( () -> {
+                    waiting.setText("Waiting for player 2 to ready up...");
+                    });
+                }
+            } else if (player == PLAYER2) {
+                ready1 = gateway.getReady1();
+                ready2 = gateway.getReady2();
+                if (ready1 == true) {
+                    Platform.runLater( () -> {
+                    player1ready.setText("Player 1 is ready to play!");
+                    });
+                }
+                if (ready1 == false && ready2 == true) {
+                    Platform.runLater( () -> {
+                    waiting.setText("Waiting for player 1 to ready up...");
+                    });
+                } else if (ready1 == true && ready2 == false) {
+                    Platform.runLater( () -> {
+                    waiting.setText("Waiting for player 2 to ready up...");
+                    });
                 }
             }
-        } catch (IOException ex) {
-            Platform.runLater(()->textArea.appendText("Exception in client thread: "+ex.toString()+"\n"));
         }
+        Platform.runLater( () -> {
+            bothReady.setText("Both players are ready! Game starting in 5 seconds");
+        });
+        try {
+            Thread.sleep(5*1000); // Sleep for 5 seconds
+        } catch (InterruptedException ex) { }
+        Platform.runLater(() -> {
+            GamePane root = new GamePane();
+            Scene scene = new Scene(root, 300, 250);
+            root.setOnKeyPressed(e -> {
+                switch (e.getCode()) {
+                    case DOWN: {
+                        System.out.println("down");
+                        gateway.sendMove(DOWN);
+                        break;
+                    }
+                    case UP: {
+                        System.out.println("up");
+                        gateway.sendMove(UP);
+                        break;
+                    }
+                    case LEFT: {
+                        System.out.println("left");
+                        gateway.sendMove(LEFT);
+                        break;
+                    }
+                    case RIGHT: {
+                        System.out.println("right");
+                        gateway.sendMove(RIGHT);
+                        break;
+                    }
+                }   
+            });
+            root.requestFocus(); 
+
+            Stage stage = new Stage();
+            stage.setTitle("Game Physics");
+            stage.setScene(scene);
+            stage.setOnCloseRequest((event)->System.exit(0));
+            stage.show();
+
+            // This is the main animation thread
+            new Thread(() -> {
+                while (true) {
+                    root.setGateway(gateway);
+                    ArrayList<Shape> shapes = gateway.getShapes();
+                    int P1Score = gateway.getP1Score();
+                    int P2Score = gateway.getP2Score();
+                    Platform.runLater(()-> {
+                        root.setShapes(shapes);
+                        root.setScores(P1Score,P2Score);
+                    });
+
+                    try {
+                        Thread.sleep(50);
+                    } catch (InterruptedException ex) {
+
+                    }
+                }
+            }).start();
+        });
     }
 }
